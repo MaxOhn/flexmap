@@ -1,0 +1,20 @@
+[package]
+name = "flexmap"
+version = "0.1.0"
+authors = ["MaxOhn <ohn.m@hotmail.de>"]
+edition = "2021"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/MaxOhn/flexmap"
+description = "A highly flexible concurrent map"
+keywords = ["map", "concurrency", "hashmap", "async"]
+
+[features]
+default = ["std", "tokio"]
+std = []
+tokio = ["futures", "dep:tokio"]
+
+[dependencies]
+futures = { version = "0.3", optional = true, default-features = false }
+hashbrown = { version = "0.12" }
+tokio = { version = "1.20", optional = true, default-features = false, features = ["sync"] }
