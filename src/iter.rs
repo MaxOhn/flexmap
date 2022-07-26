@@ -179,12 +179,14 @@ mod std {
                     }
                 }
 
-                let guard = self
-                    .map
-                    .inner
-                    .get(self.curr_idx)?
-                    .read()
-                    .expect("RwLock poisoned");
+                let guard = match self.map.inner.get(self.curr_idx) {
+                    Some(lock) => lock.read().expect("RwLock poisoned"),
+                    None => {
+                        self.curr.take();
+
+                        return None;
+                    }
+                };
 
                 let iter = unsafe { super::change_lifetime(&guard) }.iter();
 
@@ -237,12 +239,14 @@ mod std {
                     }
                 }
 
-                let mut guard = self
-                    .map
-                    .inner
-                    .get(self.curr_idx)?
-                    .write()
-                    .expect("RwLock poisoned");
+                let mut guard = match self.map.inner.get(self.curr_idx) {
+                    Some(lock) => lock.write().expect("RwLock poisoned"),
+                    None => {
+                        self.curr.take();
+
+                        return None;
+                    }
+                };
 
                 let iter = unsafe { super::change_lifetime_mut(&mut guard) }.iter_mut();
 
@@ -294,12 +298,14 @@ mod std {
                     }
                 }
 
-                let mut guard = self
-                    .map
-                    .inner
-                    .get(self.curr_idx)?
-                    .lock()
-                    .expect("Mutex poisoned");
+                let mut guard = match self.map.inner.get(self.curr_idx) {
+                    Some(lock) => lock.lock().expect("Mutex poisoned"),
+                    None => {
+                        self.curr.take();
+
+                        return None;
+                    }
+                };
 
                 let iter = unsafe { super::change_lifetime_mut(&mut guard) }.iter_mut();
 
@@ -373,7 +379,11 @@ mod tokio {
                         Ok(guard) => guard,
                         Err(_) => return Poll::Pending,
                     },
-                    None => return Poll::Ready(None),
+                    None => {
+                        self.curr.take();
+
+                        return Poll::Ready(None);
+                    }
                 };
 
                 let iter = unsafe { super::change_lifetime(&guard) }.iter();
@@ -423,7 +433,11 @@ mod tokio {
                         Ok(guard) => guard,
                         Err(_) => return Poll::Pending,
                     },
-                    None => return Poll::Ready(None),
+                    None => {
+                        self.curr.take();
+
+                        return Poll::Ready(None);
+                    }
                 };
 
                 let iter = unsafe { super::change_lifetime_mut(&mut guard) }.iter_mut();
@@ -481,7 +495,11 @@ mod tokio {
                         Ok(guard) => guard,
                         Err(_) => return Poll::Pending,
                     },
-                    None => return Poll::Ready(None),
+                    None => {
+                        self.curr.take();
+
+                        return Poll::Ready(None);
+                    }
                 };
 
                 let iter = unsafe { super::change_lifetime_mut(&mut guard) }.iter_mut();
