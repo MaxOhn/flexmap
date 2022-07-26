@@ -163,6 +163,19 @@ mod std {
                 .all(|map| map.read().expect("RwLock poisoned").is_empty())
         }
 
+        /// Returns the total number of elements in the map.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// This method will acquire read access to the shards so be sure you don't
+        /// have a write-guard lying around unless you intent to deadlock yourself.
+        #[allow(clippy::len_without_is_empty)] // why is that necessary...
+        pub fn len(&self) -> usize {
+            self.inner.iter().fold(0, |len, map| {
+                map.read().expect("RwLock poisoned").len() + len
+            })
+        }
+
         /// Returns an iterator to iterate over immutable references to all elements of all shards.
         ///
         /// # DEADLOCKS
@@ -205,6 +218,19 @@ mod std {
             self.inner
                 .iter()
                 .all(|map| map.lock().expect("Mutex poisoned").is_empty())
+        }
+
+        /// Returns the total number of elements in the map.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// This method will acquire a lock to the shards so be sure you don't
+        /// have a guard lying around unless you intent to deadlock yourself.
+        #[allow(clippy::len_without_is_empty)] // why is that necessary...
+        pub fn len(&self) -> usize {
+            self.inner.iter().fold(0, |len, map| {
+                map.lock().expect("Mutex poisoned").len() + len
+            })
         }
 
         /// Returns an iterator to iterate over mutable references to all elements of all shards,
@@ -396,6 +422,22 @@ mod tokio {
             true
         }
 
+        /// Returns the total number of elements in the map.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// This method will acquire read access to the shards so be sure you don't
+        /// have a write-guard lying around unless you intent to deadlock yourself.
+        pub async fn len(&self) -> usize {
+            let mut len = 0;
+
+            for map in self.inner.iter() {
+                len += map.read().await.len();
+            }
+
+            len
+        }
+
         /// Returns a stream to iterate over immutable references to all elements of all shards.
         ///
         /// # DEADLOCKS
@@ -450,6 +492,22 @@ mod tokio {
             }
 
             true
+        }
+
+        /// Returns the total number of elements in the map.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// This method will acquire a lock to the shards so be sure you don't
+        /// have a write-guard lying around unless you intent to deadlock yourself.
+        pub async fn len(&self) -> usize {
+            let mut len = 0;
+
+            for map in self.inner.iter() {
+                len += map.lock().await.len();
+            }
+
+            len
         }
 
         /// Returns a stream to iterate over mutable references to all elements of all shards,
