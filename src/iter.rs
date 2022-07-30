@@ -146,18 +146,19 @@ mod std {
 
     use super::{GuardIter, GuardIterMut, Ref, RefMut};
 
-    type ReadGuardIter<'map, K, V> = GuardIter<'map, RwLockReadGuard<'map, HashMap<K, V>>, K, V>;
+    type ReadGuardIter<'map, K, V, S> =
+        GuardIter<'map, RwLockReadGuard<'map, HashMap<K, V, S>>, K, V>;
 
     #[derive(Debug)]
     /// An iterator over references of entries of a [`StdRwLockMap`].
-    pub struct StdRwLockIter<'map, K, V, const N: usize> {
-        map: &'map StdRwLockMap<K, V, N>,
+    pub struct StdRwLockIter<'map, K, V, S> {
+        map: &'map StdRwLockMap<K, V, S>,
         curr_idx: usize,
-        curr: Option<ReadGuardIter<'map, K, V>>,
+        curr: Option<ReadGuardIter<'map, K, V, S>>,
     }
 
-    impl<'map, K, V, const N: usize> StdRwLockIter<'map, K, V, N> {
-        pub(crate) fn new(map: &'map StdRwLockMap<K, V, N>) -> Self {
+    impl<'map, K, V, S> StdRwLockIter<'map, K, V, S> {
+        pub(crate) fn new(map: &'map StdRwLockMap<K, V, S>) -> Self {
             Self {
                 map,
                 curr_idx: 0,
@@ -166,8 +167,8 @@ mod std {
         }
     }
 
-    impl<'map, K, V, const N: usize> Iterator for StdRwLockIter<'map, K, V, N> {
-        type Item = Ref<RwLockReadGuard<'map, HashMap<K, V>>, K, V>;
+    impl<'map, K, V, S> Iterator for StdRwLockIter<'map, K, V, S> {
+        type Item = Ref<RwLockReadGuard<'map, HashMap<K, V, S>>, K, V>;
 
         fn next(&mut self) -> Option<Self::Item> {
             loop {
@@ -200,24 +201,24 @@ mod std {
             self.curr
                 .as_ref()
                 .map(|guard| guard.iter.size_hint())
-                .map(|(min, _)| (min, (self.curr_idx == N).then_some(min)))
+                .map(|(min, _)| (min, (self.curr_idx == self.map.inner.len()).then_some(min)))
                 .unwrap_or((0, None))
         }
     }
 
-    type WriteGuardIter<'map, K, V> =
-        GuardIterMut<'map, RwLockWriteGuard<'map, HashMap<K, V>>, K, V>;
+    type WriteGuardIter<'map, K, V, S> =
+        GuardIterMut<'map, RwLockWriteGuard<'map, HashMap<K, V, S>>, K, V>;
 
     #[derive(Debug)]
     /// An iterator over mutable references of entries of a [`StdRwLockMap`].
-    pub struct StdRwLockIterMut<'map, K, V, const N: usize> {
-        map: &'map StdRwLockMap<K, V, N>,
+    pub struct StdRwLockIterMut<'map, K, V, S> {
+        map: &'map StdRwLockMap<K, V, S>,
         curr_idx: usize,
-        curr: Option<WriteGuardIter<'map, K, V>>,
+        curr: Option<WriteGuardIter<'map, K, V, S>>,
     }
 
-    impl<'map, K, V, const N: usize> StdRwLockIterMut<'map, K, V, N> {
-        pub(crate) fn new(map: &'map StdRwLockMap<K, V, N>) -> Self {
+    impl<'map, K, V, S> StdRwLockIterMut<'map, K, V, S> {
+        pub(crate) fn new(map: &'map StdRwLockMap<K, V, S>) -> Self {
             Self {
                 map,
                 curr_idx: 0,
@@ -226,8 +227,8 @@ mod std {
         }
     }
 
-    impl<'map, K, V, const N: usize> Iterator for StdRwLockIterMut<'map, K, V, N> {
-        type Item = RefMut<RwLockWriteGuard<'map, HashMap<K, V>>, K, V>;
+    impl<'map, K, V, S> Iterator for StdRwLockIterMut<'map, K, V, S> {
+        type Item = RefMut<RwLockWriteGuard<'map, HashMap<K, V, S>>, K, V>;
 
         fn next(&mut self) -> Option<Self::Item> {
             loop {
@@ -260,23 +261,24 @@ mod std {
             self.curr
                 .as_ref()
                 .map(|guard| guard.iter.size_hint())
-                .map(|(min, _)| (min, (self.curr_idx == N).then_some(min)))
+                .map(|(min, _)| (min, (self.curr_idx == self.map.inner.len()).then_some(min)))
                 .unwrap_or((0, None))
         }
     }
 
-    type MutexGuardIter<'map, K, V> = GuardIterMut<'map, MutexGuard<'map, HashMap<K, V>>, K, V>;
+    type MutexGuardIter<'map, K, V, S> =
+        GuardIterMut<'map, MutexGuard<'map, HashMap<K, V, S>>, K, V>;
 
     #[derive(Debug)]
     /// An iterator over references of entries of a [`StdMutexMap`].
-    pub struct StdMutexIter<'map, K, V, const N: usize> {
-        map: &'map StdMutexMap<K, V, N>,
+    pub struct StdMutexIter<'map, K, V, S> {
+        map: &'map StdMutexMap<K, V, S>,
         curr_idx: usize,
-        curr: Option<MutexGuardIter<'map, K, V>>,
+        curr: Option<MutexGuardIter<'map, K, V, S>>,
     }
 
-    impl<'map, K, V, const N: usize> StdMutexIter<'map, K, V, N> {
-        pub(crate) fn new(map: &'map StdMutexMap<K, V, N>) -> Self {
+    impl<'map, K, V, S> StdMutexIter<'map, K, V, S> {
+        pub(crate) fn new(map: &'map StdMutexMap<K, V, S>) -> Self {
             Self {
                 map,
                 curr_idx: 0,
@@ -285,8 +287,8 @@ mod std {
         }
     }
 
-    impl<'map, K, V, const N: usize> Iterator for StdMutexIter<'map, K, V, N> {
-        type Item = RefMut<MutexGuard<'map, HashMap<K, V>>, K, V>;
+    impl<'map, K, V, S> Iterator for StdMutexIter<'map, K, V, S> {
+        type Item = RefMut<MutexGuard<'map, HashMap<K, V, S>>, K, V>;
 
         fn next(&mut self) -> Option<Self::Item> {
             loop {
@@ -319,7 +321,7 @@ mod std {
             self.curr
                 .as_ref()
                 .map(|guard| guard.iter.size_hint())
-                .map(|(min, _)| (min, (self.curr_idx == N).then_some(min)))
+                .map(|(min, _)| (min, (self.curr_idx == self.map.inner.len()).then_some(min)))
                 .unwrap_or((0, None))
         }
     }
@@ -341,18 +343,19 @@ mod tokio {
 
     use super::{GuardIter, GuardIterMut, Ref, RefMut};
 
-    type ReadGuardIter<'map, K, V> = GuardIter<'map, RwLockReadGuard<'map, HashMap<K, V>>, K, V>;
+    type ReadGuardIter<'map, K, V, S> =
+        GuardIter<'map, RwLockReadGuard<'map, HashMap<K, V, S>>, K, V>;
 
     #[derive(Debug)]
     /// A stream  over references of entries of a [`TokioRwLockMap`].
-    pub struct TokioRwLockStream<'map, K, V, const N: usize> {
-        map: &'map TokioRwLockMap<K, V, N>,
+    pub struct TokioRwLockStream<'map, K, V, S> {
+        map: &'map TokioRwLockMap<K, V, S>,
         curr_idx: usize,
-        curr: Option<ReadGuardIter<'map, K, V>>,
+        curr: Option<ReadGuardIter<'map, K, V, S>>,
     }
 
-    impl<'map, K, V, const N: usize> TokioRwLockStream<'map, K, V, N> {
-        pub(crate) fn new(map: &'map TokioRwLockMap<K, V, N>) -> Self {
+    impl<'map, K, V, S> TokioRwLockStream<'map, K, V, S> {
+        pub(crate) fn new(map: &'map TokioRwLockMap<K, V, S>) -> Self {
             Self {
                 map,
                 curr_idx: 0,
@@ -361,8 +364,8 @@ mod tokio {
         }
     }
 
-    impl<'map, K, V, const N: usize> Stream for TokioRwLockStream<'map, K, V, N> {
-        type Item = Ref<RwLockReadGuard<'map, HashMap<K, V>>, K, V>;
+    impl<'map, K, V, S> Stream for TokioRwLockStream<'map, K, V, S> {
+        type Item = Ref<RwLockReadGuard<'map, HashMap<K, V, S>>, K, V>;
 
         fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             loop {
@@ -394,19 +397,19 @@ mod tokio {
         }
     }
 
-    type WriteGuardIter<'map, K, V> =
-        GuardIterMut<'map, RwLockWriteGuard<'map, HashMap<K, V>>, K, V>;
+    type WriteGuardIter<'map, K, V, S> =
+        GuardIterMut<'map, RwLockWriteGuard<'map, HashMap<K, V, S>>, K, V>;
 
     #[derive(Debug)]
     /// A stream  over mutable references of entries of a [`TokioRwLockMap`].
-    pub struct TokioRwLockStreamMut<'map, K, V, const N: usize> {
-        map: &'map TokioRwLockMap<K, V, N>,
+    pub struct TokioRwLockStreamMut<'map, K, V, S> {
+        map: &'map TokioRwLockMap<K, V, S>,
         curr_idx: usize,
-        curr: Option<WriteGuardIter<'map, K, V>>,
+        curr: Option<WriteGuardIter<'map, K, V, S>>,
     }
 
-    impl<'map, K, V, const N: usize> TokioRwLockStreamMut<'map, K, V, N> {
-        pub(crate) fn new(map: &'map TokioRwLockMap<K, V, N>) -> Self {
+    impl<'map, K, V, S> TokioRwLockStreamMut<'map, K, V, S> {
+        pub(crate) fn new(map: &'map TokioRwLockMap<K, V, S>) -> Self {
             Self {
                 map,
                 curr_idx: 0,
@@ -415,8 +418,8 @@ mod tokio {
         }
     }
 
-    impl<'map, K, V, const N: usize> Stream for TokioRwLockStreamMut<'map, K, V, N> {
-        type Item = RefMut<RwLockWriteGuard<'map, HashMap<K, V>>, K, V>;
+    impl<'map, K, V, S> Stream for TokioRwLockStreamMut<'map, K, V, S> {
+        type Item = RefMut<RwLockWriteGuard<'map, HashMap<K, V, S>>, K, V>;
 
         fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             loop {
@@ -452,23 +455,24 @@ mod tokio {
             self.curr
                 .as_ref()
                 .map(|guard| guard.iter.size_hint())
-                .map(|(min, _)| (min, (self.curr_idx == N).then_some(min)))
+                .map(|(min, _)| (min, (self.curr_idx == self.map.inner.len()).then_some(min)))
                 .unwrap_or((0, None))
         }
     }
 
-    type MutexGuardIter<'map, K, V> = GuardIterMut<'map, MutexGuard<'map, HashMap<K, V>>, K, V>;
+    type MutexGuardIter<'map, K, V, S> =
+        GuardIterMut<'map, MutexGuard<'map, HashMap<K, V, S>>, K, V>;
 
     #[derive(Debug)]
     /// A stream  over mutable references of entries of a [`TokioMutexMap`].
-    pub struct TokioMutexStream<'map, K, V, const N: usize> {
-        map: &'map TokioMutexMap<K, V, N>,
+    pub struct TokioMutexStream<'map, K, V, S> {
+        map: &'map TokioMutexMap<K, V, S>,
         curr_idx: usize,
-        curr: Option<MutexGuardIter<'map, K, V>>,
+        curr: Option<MutexGuardIter<'map, K, V, S>>,
     }
 
-    impl<'map, K, V, const N: usize> TokioMutexStream<'map, K, V, N> {
-        pub(crate) fn new(map: &'map TokioMutexMap<K, V, N>) -> Self {
+    impl<'map, K, V, S> TokioMutexStream<'map, K, V, S> {
+        pub(crate) fn new(map: &'map TokioMutexMap<K, V, S>) -> Self {
             Self {
                 map,
                 curr_idx: 0,
@@ -477,8 +481,8 @@ mod tokio {
         }
     }
 
-    impl<'map, K, V, const N: usize> Stream for TokioMutexStream<'map, K, V, N> {
-        type Item = RefMut<MutexGuard<'map, HashMap<K, V>>, K, V>;
+    impl<'map, K, V, S> Stream for TokioMutexStream<'map, K, V, S> {
+        type Item = RefMut<MutexGuard<'map, HashMap<K, V, S>>, K, V>;
 
         fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
             loop {
@@ -514,7 +518,7 @@ mod tokio {
             self.curr
                 .as_ref()
                 .map(|guard| guard.iter.size_hint())
-                .map(|(min, _)| (min, (self.curr_idx == N).then_some(min)))
+                .map(|(min, _)| (min, (self.curr_idx == self.map.inner.len()).then_some(min)))
                 .unwrap_or((0, None))
         }
     }

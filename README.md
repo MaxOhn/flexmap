@@ -1,30 +1,22 @@
 # FlexMap
 
-A highly flexible concurrent map with a similar approach as [DashMap](https://github.com/xacrimon/dashmap).
+A flexible concurrent map with a similar approach as [DashMap](https://github.com/xacrimon/dashmap).
 
 ## Comparison
 
 The _ of FlexMap compared to DashMap:
   - Disadvantage:
     - Interface is very different than the one from the standard library's HashMap.
-    - The index for the internal hashmap is determined by the keys instead of threads,
-    hence the key type needs to implement a specific trait, namely `FlexMapKey`. By
-    default, this trait is only implemented for integers by simple taking a modulo but it
-    can easily be implemented for any other type.
-    - Instead of allowing types that borrow into the key type, methods on FlexMap really do
-    need the key type itself.
     - Most definitely not faster than DashMap, likely a little slower even. I did not
     benchmark yet.
+    - Nothing is tested yet!!
   - Advantages:
-    - Instead of always using a synchronous mutex, the internal locks are **flex**ible so
+    - Instead of always using a synchronous RwLock, the internal locks are **flex**ible so
     that any lock can be added. By default, provided locks are both RwLock and Mutex from
     both the standard library and [tokio](https://docs.rs/tokio/latest/tokio/).
-    - Instead of basing the amount of internal hashmaps on the amount of CPU cores, the
-    amount is **flex**ible and can be chosen as a const generic. The more maps, the lower the
-    likelyhood of deadlocking. Defaults to 10 on the provided default locks.
-    - Due to the different interface, the user has full control over locks and their
-    guards, thus shifting the responsibility to not deadlock on the user instead of
-    internal machinery.
+    - The different interface requires the user to lock first, then use the given guards
+    appropriatly. This makes deadlocking less likely or at least easier to track down when it
+    happens.
 
 ## Why
 

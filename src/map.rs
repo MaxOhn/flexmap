@@ -1,6 +1,6 @@
-use ::std::{iter, marker::PhantomData};
+use ::std::hash::{BuildHasher, Hash, Hasher};
 
-use hashbrown::HashMap;
+use hashbrown::{hash_map::DefaultHashBuilder, HashMap};
 
 use crate::MapLock;
 
@@ -12,67 +12,144 @@ pub use self::tokio::{TokioMutexMap, TokioMutexMarker, TokioRwLockMap, TokioRwLo
 
 /// Concurrent map with a similar internal structure to `DashMap`.
 ///
-/// However, the amount of shards for this map can be set manually
-/// and can also be locked through any kind of locks like a `std::sync::RwLock` or a `tokio::sync::Mutex`.
+/// However, this map can get locked through any kind of locks like a `std::sync::RwLock` or a
+/// `tokio::sync::Mutex`.
 ///
-/// Access to the map is generally abstracted through a [`Guard`](crate::Guard) which you get
-/// from either `FlexMap::read` or `FlexMap::write`.
+/// Access to the map is generally abstracted through a [`Guard`](crate::Guard).
 ///
 /// # DEADLOCKS
 ///
 /// Note that the map can still deadlock when you hold a write-guard and want to
 /// get another guard while both happen to fall into the same shard.
 /// So don't do that :)
-pub struct FlexMap<K, V, L, const N: usize>
+pub struct FlexMap<K, V, S, L>
 where
-    L: MapLock<HashMap<K, V>>,
+    L: MapLock<HashMap<K, V, S>>,
 {
     pub(super) inner: Box<[L::Lock]>,
-    inner_count: PhantomData<[(); N]>,
+    shift: usize,
+    hasher: S,
 }
 
-impl<K, V, L, const N: usize> Default for FlexMap<K, V, L, N>
+impl<K, V, S, L> FlexMap<K, V, S, L>
 where
-    L: MapLock<HashMap<K, V>>,
-    L::Lock: Default,
+    L: MapLock<HashMap<K, V, S>>,
+    S: BuildHasher,
 {
-    #[inline]
-    fn default() -> Self {
-        let inner = iter::repeat_with(<L::Lock as Default>::default)
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+    // https://github.com/xacrimon/dashmap/blob/459db7ac6f3d0b46f507cb724dd9bb0ce389f4ae/src/lib.rs#L366
+    fn determine_shard<Q: Hash>(&self, key: &Q) -> usize {
+        let mut hasher = self.hasher.build_hasher();
+        key.hash(&mut hasher);
+        let hash = hasher.finish() as usize;
 
-        Self {
-            inner,
-            inner_count: PhantomData,
-        }
+        (hash << 7) >> self.shift
     }
 }
 
-macro_rules! impl_from_iter {
-    ($($map:ident: $lock:ident $($unwrap:ident)?,)*) => {
+// https://github.com/xacrimon/dashmap/blob/459db7ac6f3d0b46f507cb724dd9bb0ce389f4ae/src/lib.rs#L54
+fn default_shard_amount() -> usize {
+    (::std::thread::available_parallelism().map_or(1, usize::from) * 4).next_power_of_two()
+}
+
+macro_rules! impl_flex {
+    ($($ty:ident: $orig:ident $lock:ident,)*) => {
         $(
-            impl<K, V, const N: usize> FromIterator<(K, V)> for $map<K, V, N>
+            impl<K, V> FlexMap<K, V, DefaultHashBuilder, $ty> {
+                /// Creates an empty map.
+                pub fn new() -> Self {
+                    Self::with_hasher(DefaultHashBuilder::new())
+                }
+
+                /// Creates an empty map with `shard_amount` many internal locked maps.
+                ///
+                /// # Panics
+                ///
+                /// `shard_amount` needs to be greater than 0 and be a power of two or this
+                /// function panics.
+                pub fn with_shard_amount(shard_amount: usize) -> Self {
+                    Self::with_shard_amount_and_hasher(shard_amount, DefaultHashBuilder::new())
+                }
+            }
+
+            impl<K, V, S: Clone> FlexMap<K, V, S, $ty> {
+                /// Creates an empty map which will use the given hash builder to hash keys.
+                pub fn with_hasher(hasher: S) -> Self {
+                    Self::with_shard_amount_and_hasher(default_shard_amount(), hasher)
+                }
+
+                /// Creates an empty map with `shard_amount` many internal locked maps, each one
+                /// using the given hash builder to hash keys.
+                ///
+                /// # Panics
+                ///
+                /// `shard_amount` needs to be greater than 0 and be a power of two or this
+                /// function panics.
+                pub fn with_shard_amount_and_hasher(shard_amount: usize, hasher: S) -> Self {
+                    assert!(shard_amount > 0);
+                    assert!(shard_amount.is_power_of_two());
+
+                    let rev_shift = shard_amount.trailing_zeros() as usize;
+                    let bits_in_usize = ::std::mem::size_of::<usize>() * 8;
+
+                    let shift = bits_in_usize - rev_shift;
+
+                    let inner = (0..shard_amount)
+                        .map(|_| :: $orig ::sync:: $lock ::new(HashMap::with_hasher(hasher.clone())))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice();
+
+                    Self {
+                        inner,
+                        shift,
+                        hasher,
+                    }
+                }
+            }
+        )*
+    }
+}
+
+impl_flex! {
+    StdRwLockMarker:   std   RwLock,
+    StdMutexMarker:    std   Mutex,
+    TokioRwLockMarker: tokio RwLock,
+    TokioMutexMarker:  tokio Mutex,
+}
+
+macro_rules! impl_traits {
+    ($($map:ident: $lock:ident $own:ident $($unwrap:ident)?,)*) => {
+        $(
+            impl<K, V, S: Clone + Default> Default for $map<K, V, S> {
+                fn default() -> Self {
+                    let hasher = <S as Default>::default();
+
+                    Self::with_shard_amount_and_hasher(super::default_shard_amount(), hasher)
+                }
+            }
+
+            impl<K, V, S> Extend<(K, V)> for $map<K, V, S>
             where
-                K: crate::FlexMapKey + Eq + ::std::hash::Hash,
+                K: Eq + ::std::hash::Hash,
+                S: ::std::hash::BuildHasher,
+            {
+                fn extend<I>(&mut self, iter: I)
+                where
+                    I: IntoIterator<Item = (K, V)>
+                {
+                    for (k, v) in iter {
+                        self.$own(k)$(.$unwrap())?.insert(v);
+                    }
+                }
+            }
+
+            impl<K, V, S> FromIterator<(K, V)> for $map<K, V, S>
+            where
+                K: Eq + ::std::hash::Hash,
+                S: ::std::hash::BuildHasher + Clone + Default
             {
                 fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
-                    let map = Self::default();
-
-                    let iter = iter.into_iter();
-                    let (len, _) = iter.size_hint();
-
-                    if len > N {
-                        let mut guards: Vec<_> = map.inner.iter().map(|lock| lock.$lock().unwrap()).collect();
-
-                        for (key, value) in iter {
-                            guards[key.index::<N>()].insert(key, value);
-                        }
-                    } else {
-                        for (key, value) in iter {
-                            map.$lock(key)$(.$unwrap())?.insert(value);
-                        }
-                    }
+                    let mut map = Self::default();
+                    map.extend(iter);
 
                     map
                 }
@@ -84,15 +161,17 @@ macro_rules! impl_from_iter {
 #[cfg(feature = "std")]
 mod std {
     use std::{
+        borrow::Borrow,
         fmt::{Debug, Formatter, Result as FmtResult},
+        hash::{BuildHasher, Hash},
         sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
     };
 
-    use hashbrown::HashMap;
+    use hashbrown::{hash_map::DefaultHashBuilder, HashMap};
 
     use crate::{
         std::{StdMutexIter, StdRwLockIter, StdRwLockIterMut},
-        FlexMap, FlexMapKey, Guard, MapLock,
+        FlexMap, Guard, MapLock, OwnGuard,
     };
 
     #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -112,16 +191,24 @@ mod std {
     }
 
     /// [`FlexMap`] that operates on [`std::sync::RwLock`].
-    pub type StdRwLockMap<K, V, const N: usize = 10> = FlexMap<K, V, StdRwLockMarker, N>;
+    pub type StdRwLockMap<K, V, S = DefaultHashBuilder> = FlexMap<K, V, S, StdRwLockMarker>;
 
     /// [`FlexMap`] that operates on [`std::sync::Mutex`].
-    pub type StdMutexMap<K, V, const N: usize = 10> = FlexMap<K, V, StdMutexMarker, N>;
+    pub type StdMutexMap<K, V, S = DefaultHashBuilder> = FlexMap<K, V, S, StdMutexMarker>;
 
-    type ReadGuard<'map, K, V> = Guard<RwLockReadGuard<'map, HashMap<K, V>>, K, V>;
-    type WriteGuard<'map, K, V> = Guard<RwLockWriteGuard<'map, HashMap<K, V>>, K, V>;
-    type LockGuard<'map, K, V> = Guard<MutexGuard<'map, HashMap<K, V>>, K, V>;
+    type ReadGuard<'map, 'key, K, V, S, Q> =
+        Guard<'key, RwLockReadGuard<'map, HashMap<K, V, S>>, K, V, Q>;
+    type WriteGuard<'map, 'key, K, V, S, Q> =
+        Guard<'key, RwLockWriteGuard<'map, HashMap<K, V, S>>, K, V, Q>;
+    type OwnWriteGuard<'map, K, V, S> = OwnGuard<RwLockWriteGuard<'map, HashMap<K, V, S>>, K, V>;
+    type LockGuard<'map, 'key, K, V, S, Q> =
+        Guard<'key, MutexGuard<'map, HashMap<K, V, S>>, K, V, Q>;
+    type OwnLockGuard<'map, K, V, S> = OwnGuard<MutexGuard<'map, HashMap<K, V, S>>, K, V>;
 
-    impl<K: FlexMapKey, V, const N: usize> StdRwLockMap<K, V, N> {
+    impl<K, V, S> StdRwLockMap<K, V, S>
+    where
+        S: BuildHasher,
+    {
         /// Acquire read access to a shard.
         ///
         /// # DEADLOCKS
@@ -129,10 +216,13 @@ mod std {
         /// While not as bad as write access, you should still try to hold this guard
         /// as briefly as possible. If a write guard is being acquired while this guard
         /// is being held we got ourselves a potential deadlock.
-        pub fn read(&self, key: K) -> ReadGuard<'_, K, V> {
-            let guard = self.inner[key.index::<N>()]
-                .read()
-                .expect("RwLock poisoned");
+        pub fn read<'map, 'key, Q>(&'map self, key: &'key Q) -> ReadGuard<'map, 'key, K, V, S, Q>
+        where
+            K: Borrow<Q>,
+            Q: Eq + Hash,
+        {
+            let idx = self.determine_shard(key);
+            let guard = self.inner[idx].read().expect("RwLock poisoned");
 
             Guard::new(guard, key)
         }
@@ -143,14 +233,35 @@ mod std {
         ///
         /// Be sure you hold the guard as briefly as possible so that nothing deadlocks.
         /// If any guard for the same shard is being acquired while this guard is being held, that's no bueno.
-        pub fn write(&self, key: K) -> WriteGuard<'_, K, V> {
-            let guard = self.inner[key.index::<N>()]
-                .write()
-                .expect("RwLock poisoned");
+        pub fn write<'map, 'key, Q>(&'map self, key: &'key Q) -> WriteGuard<'map, 'key, K, V, S, Q>
+        where
+            K: Borrow<Q>,
+            Q: Eq + Hash,
+        {
+            let idx = self.determine_shard(key);
+            let guard = self.inner[idx].write().expect("RwLock poisoned");
 
             Guard::new(guard, key)
         }
 
+        /// Acquire write access to a shard by providing ownership to a key.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// Be sure you hold the guard as briefly as possible so that nothing deadlocks.
+        /// If any guard for the same shard is being acquired while this guard is being held, that's no bueno.
+        pub fn own(&self, key: K) -> OwnWriteGuard<'_, K, V, S>
+        where
+            K: Eq + Hash,
+        {
+            let idx = self.determine_shard(&key);
+            let guard = self.inner[idx].write().expect("RwLock poisoned");
+
+            OwnGuard::new(guard, key)
+        }
+    }
+
+    impl<K, V, S> StdRwLockMap<K, V, S> {
         /// Check if all shards are empty.
         ///
         /// # DEADLOCKS
@@ -181,7 +292,7 @@ mod std {
         /// # DEADLOCKS
         ///
         /// While iterating, be sure there is no write-guard around or it will deadlock.
-        pub fn iter(&self) -> StdRwLockIter<'_, K, V, N> {
+        pub fn iter(&self) -> StdRwLockIter<'_, K, V, S> {
             StdRwLockIter::new(self)
         }
 
@@ -190,24 +301,50 @@ mod std {
         /// # DEADLOCKS
         ///
         /// While iterating, be sure there is no read- or write-guard around or it will deadlock.
-        pub fn iter_mut(&self) -> StdRwLockIterMut<'_, K, V, N> {
+        pub fn iter_mut(&self) -> StdRwLockIterMut<'_, K, V, S> {
             StdRwLockIterMut::new(self)
         }
     }
 
-    impl<K: FlexMapKey, V, const N: usize> StdMutexMap<K, V, N> {
+    impl<K, V, S> StdMutexMap<K, V, S>
+    where
+        S: BuildHasher,
+    {
         /// Acquire sole access to a shard.
         ///
         /// # DEADLOCKS
         ///
         /// Hold the guard as briefly as possible since all other acquisations of this lock
         /// on the same shard will block until the guard is dropped.
-        pub fn lock(&self, key: K) -> LockGuard<'_, K, V> {
-            let guard = self.inner[key.index::<N>()].lock().expect("Mutex poisoned");
+        pub fn lock<'map, 'key, Q>(&'map self, key: &'key Q) -> LockGuard<'map, 'key, K, V, S, Q>
+        where
+            K: Borrow<Q>,
+            Q: Eq + Hash,
+        {
+            let idx = self.determine_shard(key);
+            let guard = self.inner[idx].lock().expect("Mutex poisoned");
 
             Guard::new(guard, key)
         }
 
+        /// Acquire sole access to a shard by providing ownership to a key.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// Hold the guard as briefly as possible since all other acquisations of this lock
+        /// on the same shard will block until the guard is dropped.
+        pub fn own(&self, key: K) -> OwnLockGuard<'_, K, V, S>
+        where
+            K: Eq + Hash,
+        {
+            let idx = self.determine_shard(&key);
+            let guard = self.inner[idx].lock().expect("Mutex poisoned");
+
+            OwnGuard::new(guard, key)
+        }
+    }
+
+    impl<K, V, S> StdMutexMap<K, V, S> {
         /// Check if all shards are empty.
         ///
         /// # DEADLOCKS
@@ -239,7 +376,7 @@ mod std {
         /// # DEADLOCKS
         ///
         /// While iterating, be sure there is no guard around or it will deadlock.
-        pub fn iter(&self) -> StdMutexIter<'_, K, V, N> {
+        pub fn iter(&self) -> StdMutexIter<'_, K, V, S> {
             self.iter_mut()
         }
 
@@ -248,12 +385,12 @@ mod std {
         /// # DEADLOCKS
         ///
         /// While iterating, be sure there is no guard around or it will deadlock.
-        pub fn iter_mut(&self) -> StdMutexIter<'_, K, V, N> {
+        pub fn iter_mut(&self) -> StdMutexIter<'_, K, V, S> {
             StdMutexIter::new(self)
         }
     }
 
-    impl<K, V, const N: usize> Debug for StdRwLockMap<K, V, N>
+    impl<K, V, S> Debug for StdRwLockMap<K, V, S>
     where
         K: Debug,
         V: Debug,
@@ -286,7 +423,7 @@ mod std {
         }
     }
 
-    impl<K, V, const N: usize> Debug for StdMutexMap<K, V, N>
+    impl<K, V, S> Debug for StdMutexMap<K, V, S>
     where
         K: Debug,
         V: Debug,
@@ -319,22 +456,26 @@ mod std {
         }
     }
 
-    impl_from_iter! {
-        StdRwLockMap: write,
-        StdMutexMap: lock,
+    impl_traits! {
+        StdRwLockMap: write own,
+        StdMutexMap: lock own,
     }
 }
 
 #[cfg(feature = "tokio")]
 mod tokio {
-    use std::fmt::{Debug, Formatter, Result as FmtResult};
+    use std::{
+        borrow::Borrow,
+        fmt::{Debug, Formatter, Result as FmtResult},
+        hash::{BuildHasher, Hash},
+    };
 
-    use hashbrown::HashMap;
+    use hashbrown::{hash_map::DefaultHashBuilder, HashMap};
     use tokio::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError};
 
     use crate::{
         tokio::{TokioMutexStream, TokioRwLockStream, TokioRwLockStreamMut},
-        FlexMap, FlexMapKey, Guard, MapLock,
+        FlexMap, Guard, MapLock, OwnGuard,
     };
 
     #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -354,16 +495,24 @@ mod tokio {
     }
 
     /// [`FlexMap`] that operates on [tokio](https://docs.rs/tokio/latest/tokio/)'s `RwLock`.
-    pub type TokioRwLockMap<K, V, const N: usize = 10> = FlexMap<K, V, TokioRwLockMarker, N>;
+    pub type TokioRwLockMap<K, V, S = DefaultHashBuilder> = FlexMap<K, V, S, TokioRwLockMarker>;
 
     /// [`FlexMap`] that operates on [tokio](https://docs.rs/tokio/latest/tokio/)'s `Mutex`.
-    pub type TokioMutexMap<K, V, const N: usize = 10> = FlexMap<K, V, TokioMutexMarker, N>;
+    pub type TokioMutexMap<K, V, S = DefaultHashBuilder> = FlexMap<K, V, S, TokioMutexMarker>;
 
-    type ReadGuard<'map, K, V> = Guard<RwLockReadGuard<'map, HashMap<K, V>>, K, V>;
-    type WriteGuard<'map, K, V> = Guard<RwLockWriteGuard<'map, HashMap<K, V>>, K, V>;
-    type LockGuard<'map, K, V> = Guard<MutexGuard<'map, HashMap<K, V>>, K, V>;
+    type ReadGuard<'map, 'key, K, V, S, Q> =
+        Guard<'key, RwLockReadGuard<'map, HashMap<K, V, S>>, K, V, Q>;
+    type WriteGuard<'map, 'key, K, V, S, Q> =
+        Guard<'key, RwLockWriteGuard<'map, HashMap<K, V, S>>, K, V, Q>;
+    type OwnWriteGuard<'map, K, V, S> = OwnGuard<RwLockWriteGuard<'map, HashMap<K, V, S>>, K, V>;
+    type LockGuard<'map, 'key, K, V, S, Q> =
+        Guard<'key, MutexGuard<'map, HashMap<K, V, S>>, K, V, Q>;
+    type OwnLockGuard<'map, K, V, S> = OwnGuard<MutexGuard<'map, HashMap<K, V, S>>, K, V>;
 
-    impl<K: FlexMapKey, V, const N: usize> TokioRwLockMap<K, V, N> {
+    impl<K, V, S> TokioRwLockMap<K, V, S>
+    where
+        S: BuildHasher,
+    {
         /// Acquire read access to a shard.
         ///
         /// # DEADLOCKS
@@ -371,8 +520,17 @@ mod tokio {
         /// While not as bad as write access, you should still try to hold this guard
         /// as briefly as possible. If a write guard is being acquired while this guard
         /// is being held we got ourselves a potential deadlock.
-        pub async fn read(&self, key: K) -> ReadGuard<'_, K, V> {
-            Guard::new(self.inner[key.index::<N>()].read().await, key)
+        pub async fn read<'map, 'key, Q>(
+            &'map self,
+            key: &'key Q,
+        ) -> ReadGuard<'map, 'key, K, V, S, Q>
+        where
+            K: Borrow<Q>,
+            Q: Eq + Hash,
+        {
+            let idx = self.determine_shard(key);
+
+            Guard::new(self.inner[idx].read().await, key)
         }
 
         /// Try to acquire read access to a shard. Fails if there is already is a write-guard in use.
@@ -382,8 +540,17 @@ mod tokio {
         /// While not as bad as write access, you should still try to hold this guard
         /// as briefly as possible. If a write guard is being acquired while this guard
         /// is being held we got ourselves a potential deadlock.
-        pub fn try_read(&self, key: K) -> Result<ReadGuard<'_, K, V>, TryLockError> {
-            Ok(Guard::new(self.inner[key.index::<N>()].try_read()?, key))
+        pub fn try_read<'map, 'key, Q>(
+            &'map self,
+            key: &'key Q,
+        ) -> Result<ReadGuard<'map, 'key, K, V, S, Q>, TryLockError>
+        where
+            K: Borrow<Q>,
+            Q: Eq + Hash,
+        {
+            let idx = self.determine_shard(key);
+
+            Ok(Guard::new(self.inner[idx].try_read()?, key))
         }
 
         /// Acquire write access to a shard.
@@ -392,8 +559,17 @@ mod tokio {
         ///
         /// Be sure you hold the guard as briefly as possible so that nothing deadlocks.
         /// If any guard for the same shard is being acquired while this guard is being held, that's no bueno.
-        pub async fn write(&self, key: K) -> WriteGuard<'_, K, V> {
-            Guard::new(self.inner[key.index::<N>()].write().await, key)
+        pub async fn write<'map, 'key, Q>(
+            &'map self,
+            key: &'key Q,
+        ) -> WriteGuard<'map, 'key, K, V, S, Q>
+        where
+            K: Borrow<Q>,
+            Q: Eq + Hash,
+        {
+            let idx = self.determine_shard(key);
+
+            Guard::new(self.inner[idx].write().await, key)
         }
 
         /// Try to acquire write access to a shard. Fails if there already is a write-guard in use.
@@ -402,10 +578,52 @@ mod tokio {
         ///
         /// Be sure you hold the guard as briefly as possible so that nothing deadlocks.
         /// If any guard for the same shard is being acquired while this guard is being held, that's no bueno.
-        pub fn try_write(&self, key: K) -> Result<WriteGuard<'_, K, V>, TryLockError> {
-            Ok(Guard::new(self.inner[key.index::<N>()].try_write()?, key))
+        pub fn try_write<'map, 'key, Q>(
+            &'map self,
+            key: &'key Q,
+        ) -> Result<WriteGuard<'map, 'key, K, V, S, Q>, TryLockError>
+        where
+            K: Borrow<Q>,
+            Q: Eq + Hash,
+        {
+            let idx = self.determine_shard(key);
+
+            Ok(Guard::new(self.inner[idx].try_write()?, key))
         }
 
+        /// Acquire write access to a shard by providing ownership to a key.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// Be sure you hold the guard as briefly as possible so that nothing deadlocks.
+        /// If any guard for the same shard is being acquired while this guard is being held, that's no bueno.
+        pub async fn own(&self, key: K) -> OwnWriteGuard<'_, K, V, S>
+        where
+            K: Eq + Hash,
+        {
+            let idx = self.determine_shard(&key);
+
+            OwnGuard::new(self.inner[idx].write().await, key)
+        }
+
+        /// Try to acquire write access to a shard by providing ownership to a key.
+        /// Fails if there already is a write-guard in use.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// Be sure you hold the guard as briefly as possible so that nothing deadlocks.
+        /// If any guard for the same shard is being acquired while this guard is being held, that's no bueno.
+        pub fn try_own(&self, key: K) -> Result<OwnWriteGuard<'_, K, V, S>, TryLockError>
+        where
+            K: Eq + Hash,
+        {
+            let idx = self.determine_shard(&key);
+
+            Ok(OwnGuard::new(self.inner[idx].try_write()?, key))
+        }
+    }
+
+    impl<K, V, S> TokioRwLockMap<K, V, S> {
         /// Check if all shards are empty.
         ///
         /// # DEADLOCKS
@@ -443,7 +661,7 @@ mod tokio {
         /// # DEADLOCKS
         ///
         /// While iterating, be sure there is no write-guard around or it will deadlock.
-        pub fn iter(&self) -> TokioRwLockStream<'_, K, V, N> {
+        pub fn iter(&self) -> TokioRwLockStream<'_, K, V, S> {
             TokioRwLockStream::new(self)
         }
 
@@ -452,20 +670,32 @@ mod tokio {
         /// # DEADLOCKS
         ///
         /// While iterating, be sure there is no read- or write-guard around or it will deadlock.
-        pub fn iter_mut(&self) -> TokioRwLockStreamMut<'_, K, V, N> {
+        pub fn iter_mut(&self) -> TokioRwLockStreamMut<'_, K, V, S> {
             TokioRwLockStreamMut::new(self)
         }
     }
 
-    impl<K: FlexMapKey, V, const N: usize> TokioMutexMap<K, V, N> {
+    impl<K, V, S> TokioMutexMap<K, V, S>
+    where
+        S: BuildHasher,
+    {
         /// Acquire sole access to a shard.
         ///
         /// # DEADLOCKS
         ///
         /// Hold the guard as briefly as possible since all other acquisations of this lock
         /// on the same shard will block until the guard is dropped.
-        pub async fn lock(&self, key: K) -> LockGuard<'_, K, V> {
-            Guard::new(self.inner[key.index::<N>()].lock().await, key)
+        pub async fn lock<'map, 'key, Q>(
+            &'map self,
+            key: &'key Q,
+        ) -> LockGuard<'map, 'key, K, V, S, Q>
+        where
+            K: Borrow<Q>,
+            Q: Eq + Hash,
+        {
+            let idx = self.determine_shard(key);
+
+            Guard::new(self.inner[idx].lock().await, key)
         }
 
         /// Try to acquire sole access to a shard. Fails if there already is a guard around.
@@ -474,10 +704,52 @@ mod tokio {
         ///
         /// Hold the guard as briefly as possible since all other acquisations of this lock
         /// on the same shard will block until the guard is dropped.
-        pub fn try_lock(&self, key: K) -> Result<LockGuard<'_, K, V>, TryLockError> {
-            Ok(Guard::new(self.inner[key.index::<N>()].try_lock()?, key))
+        pub fn try_lock<'map, 'key, Q>(
+            &'map self,
+            key: &'key Q,
+        ) -> Result<LockGuard<'map, 'key, K, V, S, Q>, TryLockError>
+        where
+            K: Borrow<Q>,
+            Q: Eq + Hash,
+        {
+            let idx = self.determine_shard(key);
+
+            Ok(Guard::new(self.inner[idx].try_lock()?, key))
         }
 
+        /// Acquire sole access to a shard by providing ownership to a key.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// Hold the guard as briefly as possible since all other acquisations of this lock
+        /// on the same shard will block until the guard is dropped.
+        pub async fn own(&self, key: K) -> OwnLockGuard<'_, K, V, S>
+        where
+            K: Eq + Hash,
+        {
+            let idx = self.determine_shard(&key);
+
+            OwnGuard::new(self.inner[idx].lock().await, key)
+        }
+
+        /// Try to acquire sole access to a shard by providing ownership to a key.
+        /// Fails if there already is a guard around.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// Hold the guard as briefly as possible since all other acquisations of this lock
+        /// on the same shard will block until the guard is dropped.
+        pub fn try_own(&self, key: K) -> Result<OwnLockGuard<'_, K, V, S>, TryLockError>
+        where
+            K: Eq + Hash,
+        {
+            let idx = self.determine_shard(&key);
+
+            Ok(OwnGuard::new(self.inner[idx].try_lock()?, key))
+        }
+    }
+
+    impl<K, V, S> TokioMutexMap<K, V, S> {
         /// Check if all shards are empty.
         ///
         /// # DEADLOCKS
@@ -516,7 +788,7 @@ mod tokio {
         /// # DEADLOCKS
         ///
         /// While iterating, be sure there is no guard around or it will deadlock.
-        pub fn iter(&self) -> TokioMutexStream<'_, K, V, N> {
+        pub fn iter(&self) -> TokioMutexStream<'_, K, V, S> {
             self.iter_mut()
         }
 
@@ -525,12 +797,12 @@ mod tokio {
         /// # DEADLOCKS
         ///
         /// While iterating, be sure there is no guard around or it will deadlock.
-        pub fn iter_mut(&self) -> TokioMutexStream<'_, K, V, N> {
+        pub fn iter_mut(&self) -> TokioMutexStream<'_, K, V, S> {
             TokioMutexStream::new(self)
         }
     }
 
-    impl<K, V, const N: usize> Debug for TokioRwLockMap<K, V, N>
+    impl<K, V, S> Debug for TokioRwLockMap<K, V, S>
     where
         K: Debug,
         V: Debug,
@@ -578,7 +850,7 @@ mod tokio {
         }
     }
 
-    impl<K, V, const N: usize> Debug for TokioMutexMap<K, V, N>
+    impl<K, V, S> Debug for TokioMutexMap<K, V, S>
     where
         K: Debug,
         V: Debug,
@@ -626,8 +898,8 @@ mod tokio {
         }
     }
 
-    impl_from_iter! {
-        TokioRwLockMap: try_write unwrap,
-        TokioMutexMap: try_lock unwrap,
+    impl_traits! {
+        TokioRwLockMap: try_write try_own unwrap,
+        TokioMutexMap: try_lock try_own unwrap,
     }
 }
