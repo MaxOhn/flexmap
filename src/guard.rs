@@ -43,10 +43,11 @@ impl<G, K, V> OwnGuard<G, K, V> {
 macro_rules! read_guard_methods {
     ($($ty:ident),*) => {
         $(
-            impl<'key, K, V, Q> crate::Guard<'key, $ty<'_, hashbrown::HashMap<K, V>>, K, V, Q>
+            impl<'key, K, V, S, Q> crate::Guard<'key, $ty<'_, hashbrown::HashMap<K, V, S>>, K, V, Q>
             where
                 K: ::std::borrow::Borrow<Q> + Eq + ::std::hash::Hash,
                 Q: Eq + ::std::hash::Hash,
+                S: ::std::hash::BuildHasher,
             {
                 read_guard_methods!(@INNER);
             }
@@ -64,10 +65,11 @@ macro_rules! read_guard_methods {
 macro_rules! write_guard_methods {
     ($($ty:ident),*) => {
         $(
-            impl<'key, K, V, Q> crate::Guard<'key, $ty<'_, hashbrown::HashMap<K, V>>, K, V, Q>
+            impl<'key, K, V, S, Q> crate::Guard<'key, $ty<'_, hashbrown::HashMap<K, V, S>>, K, V, Q>
             where
                 K: ::std::borrow::Borrow<Q> + Eq + ::std::hash::Hash,
                 Q: Eq + ::std::hash::Hash,
+                S: ::std::hash::BuildHasher,
             {
                 write_guard_methods!(@INNER);
             }
@@ -93,9 +95,10 @@ macro_rules! write_guard_methods {
 macro_rules! own_guard_methods {
     ($($ty:ident),*) => {
         $(
-            impl<K, V> crate::OwnGuard<$ty<'_, hashbrown::HashMap<K, V>>, K, V>
+            impl<K, V, S> crate::OwnGuard<$ty<'_, hashbrown::HashMap<K, V, S>>, K, V>
             where
                 K: Eq + ::std::hash::Hash,
+                S: ::std::hash::BuildHasher,
             {
                 write_guard_methods!(@INNER .as_ref().unwrap());
             }
