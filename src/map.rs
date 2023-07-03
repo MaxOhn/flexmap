@@ -57,7 +57,7 @@ macro_rules! impl_flex {
             impl<K, V> FlexMap<K, V, DefaultHashBuilder, $ty> {
                 /// Creates an empty map.
                 pub fn new() -> Self {
-                    Self::with_hasher(DefaultHashBuilder::new())
+                    Self::with_hasher(DefaultHashBuilder::default())
                 }
 
                 /// Creates an empty map with `shard_amount` many internal locked maps.
@@ -67,7 +67,7 @@ macro_rules! impl_flex {
                 /// `shard_amount` needs to be greater than 0 and be a power of two or this
                 /// function panics.
                 pub fn with_shard_amount(shard_amount: usize) -> Self {
-                    Self::with_shard_amount_and_hasher(shard_amount, DefaultHashBuilder::new())
+                    Self::with_shard_amount_and_hasher(shard_amount, DefaultHashBuilder::default())
                 }
             }
 
