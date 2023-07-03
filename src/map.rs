@@ -287,6 +287,18 @@ mod std {
             })
         }
 
+        /// Clear the map i.e. remove all entries.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// This method will acquire write access to the shards so be sure you don't
+        /// have a guard lying around unless you intent to deadlock yourself.
+        pub async fn clear(&self) {
+            for map in self.inner.iter() {
+                map.write().expect("RwLock poisoned").clear();
+            }
+        }
+
         /// Returns an iterator to iterate over immutable references to all elements of all shards.
         ///
         /// # DEADLOCKS
@@ -368,6 +380,18 @@ mod std {
             self.inner.iter().fold(0, |len, map| {
                 map.lock().expect("Mutex poisoned").len() + len
             })
+        }
+
+        /// Clear the map i.e. remove all entries.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// This method will acquire a lock to the shards so be sure you don't
+        /// have a write-guard lying around unless you intent to deadlock yourself.
+        pub async fn clear(&self) {
+            for map in self.inner.iter() {
+                map.lock().expect("Mutex poisoned").clear();
+            }
         }
 
         /// Returns an iterator to iterate over mutable references to all elements of all shards,
@@ -656,6 +680,18 @@ mod tokio {
             len
         }
 
+        /// Clear the map i.e. remove all entries.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// This method will acquire write access to the shards so be sure you don't
+        /// have a guard lying around unless you intent to deadlock yourself.
+        pub async fn clear(&self) {
+            for map in self.inner.iter() {
+                map.write().await.clear();
+            }
+        }
+
         /// Returns a stream to iterate over immutable references to all elements of all shards.
         ///
         /// # DEADLOCKS
@@ -780,6 +816,18 @@ mod tokio {
             }
 
             len
+        }
+
+        /// Clear the map i.e. remove all entries.
+        ///
+        /// # DEADLOCKS
+        ///
+        /// This method will acquire a lock to the shards so be sure you don't
+        /// have a write-guard lying around unless you intent to deadlock yourself.
+        pub async fn clear(&self) {
+            for map in self.inner.iter() {
+                map.lock().await.clear();
+            }
         }
 
         /// Returns a stream to iterate over mutable references to all elements of all shards,
